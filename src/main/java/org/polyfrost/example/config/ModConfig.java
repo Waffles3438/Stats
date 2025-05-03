@@ -25,7 +25,8 @@ public class ModConfig extends Config {
         Stats.bedwarsStatsList.clear();
         Stats.duelsStatsList.clear();
         Stats.playerRanks.clear();
-        Notifications.INSTANCE.send("Stats", "Cleared player cache", 1000);
+        Stats.properPlayerNames.clear();
+        Notifications.INSTANCE.send("Stats", "Cleared player cache", 3000);
     };
 
     public ModConfig() {

@@ -23,6 +23,7 @@ public class Stats {
     public static EldestRemovalMap<String, Duels> duelsStatsList = new EldestRemovalMap<>(maxSize);
     public static EldestRemovalMap<String, Bedwars> bedwarsStatsList = new EldestRemovalMap<>(maxSize);
     public static EldestRemovalMap<String, Ranks> playerRanks = new EldestRemovalMap<>(maxSize);
+    public static EldestRemovalMap<String, String> properPlayerNames = new EldestRemovalMap<>(maxSize);
 
     @Mod.EventHandler
     public void onInit(FMLInitializationEvent event) {
