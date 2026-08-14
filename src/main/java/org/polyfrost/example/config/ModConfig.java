@@ -1,20 +1,31 @@
 package org.polyfrost.example.config;
 
-import cc.polyfrost.oneconfig.config.annotations.Button;
-import cc.polyfrost.oneconfig.config.annotations.Text;
-import cc.polyfrost.oneconfig.utils.Notifications;
-import org.polyfrost.example.Stats;
 import cc.polyfrost.oneconfig.config.Config;
+import cc.polyfrost.oneconfig.config.annotations.Button;
+import cc.polyfrost.oneconfig.config.annotations.Slider;
+import cc.polyfrost.oneconfig.config.annotations.Text;
 import cc.polyfrost.oneconfig.config.data.Mod;
 import cc.polyfrost.oneconfig.config.data.ModType;
+import cc.polyfrost.oneconfig.utils.Notifications;
+import org.polyfrost.example.Stats;
 
 public class ModConfig extends Config {
     @Text(
-            name = "Hypixel API",
-            secure = true, multiline = false,
+            name = "Hypixel API key",
+            secure = true,
+            multiline = false,
             subcategory = "Stat Checking"
     )
     public static String api = "";
+
+    @Slider(
+            name = "Amount of players cached (restart required)",
+            min = 1,
+            max = 16,
+            step = 1,
+            subcategory = "Stat Checking"
+    )
+    public static int maxCacheSize = 4;
 
     @Button(
             name = "Clear cache",
@@ -22,10 +33,11 @@ public class ModConfig extends Config {
             subcategory = "Stat Checking"
     )
     Runnable runnable = () -> {
-        Stats.bedwarsStatsList.clear();
-        Stats.duelsStatsList.clear();
-        Stats.playerRanks.clear();
-        Stats.properPlayerNames.clear();
+        synchronized (Stats.CACHE_LOCK) {
+            Stats.bedwarsStatsList.clear();
+            Stats.duelsStatsList.clear();
+            Stats.playerProfileList.clear();
+        }
         Notifications.INSTANCE.send("Stats", "Cleared player cache", 3000);
     };
 
@@ -34,4 +46,3 @@ public class ModConfig extends Config {
         initialize();
     }
 }
-
