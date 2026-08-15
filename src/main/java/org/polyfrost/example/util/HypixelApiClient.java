@@ -3,7 +3,6 @@ package org.polyfrost.example.util;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
-import org.polyfrost.example.Stats;
 import org.polyfrost.example.command.DuelsStatsCommand;
 import org.polyfrost.example.config.ModConfig;
 
@@ -17,10 +16,13 @@ import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.UUID;
 
-/** Fetches and parses the stat-checking data exclusively from Hypixel's public API. */
+/**
+ * Fetches and parses stat data from the mod's configured backend.
+ *
+ * <p>The production backend owns the Hypixel API key. This client never receives or sends it.</p>
+ */
 public final class HypixelApiClient {
-    private static final String PLAYER_ENDPOINT = "https://api.hypixel.net/v2/player?uuid=";
-    private static final String GUILD_ENDPOINT = "https://api.hypixel.net/v2/guild?player=";
+    private static final String STATS_ENDPOINT = "/v1/stats?uuid=";
     private static final int CONNECT_TIMEOUT_MS = 5000;
     private static final int READ_TIMEOUT_MS = 10000;
     private static final int MAX_ATTEMPTS = 3;
@@ -29,70 +31,85 @@ public final class HypixelApiClient {
     }
 
     public static LookupResult lookup(String playerName, UUID uuid) {
-        if (ModConfig.api == null || ModConfig.api.trim().isEmpty()) {
-            return LookupResult.error("Set a Hypixel API key in the mod configuration before checking stats.");
-        }
         if (uuid == null) {
             return LookupResult.error("Invalid player");
         }
-
-        String cacheKey = playerName.toLowerCase(Locale.ROOT);
-        synchronized (Stats.CACHE_LOCK) {
-            PlayerProfile cachedProfile = Stats.playerProfileList.get(cacheKey);
-            Bedwars cachedBedwars = Stats.bedwarsStatsList.get(cacheKey);
-            Duels cachedDuels = Stats.duelsStatsList.get(cacheKey);
-            if (cachedProfile != null && cachedBedwars != null && cachedDuels != null) {
-                return LookupResult.success(cachedProfile, cachedBedwars, cachedDuels);
-            }
+        if (ModConfig.backendUrl == null || ModConfig.backendUrl.trim().isEmpty()) {
+            return LookupResult.error("Set the Stats backend URL in the mod configuration before checking stats.");
         }
 
-        ApiResponse playerResponse = request(PLAYER_ENDPOINT + uuid.toString().replace("-", ""));
-        if (!playerResponse.isSuccess()) {
-            return LookupResult.error(playerResponse.error);
-        }
-
-        JsonObject root;
+        final String endpoint;
         try {
-            root = new JsonParser().parse(playerResponse.body).getAsJsonObject();
+            endpoint = statsEndpoint(uuid);
+        } catch (IllegalArgumentException exception) {
+            return LookupResult.error(exception.getMessage());
+        }
+        ApiResponse response = request(endpoint);
+        if (!response.isSuccess()) {
+            return LookupResult.error(response.error);
+        }
+
+        JsonObject player;
+        JsonObject guild = new JsonObject();
+        try {
+            JsonObject root = new JsonParser().parse(response.body).getAsJsonObject();
             if (hasFalseSuccess(root)) {
-                return LookupResult.error(apiCause(root, "Hypixel rejected the player request."));
+                return LookupResult.error(apiCause(root, "Stats service rejected the request."));
             }
-            if (!root.has("player") || root.get("player").isJsonNull()) {
+            if (!root.has("player") || root.get("player").isJsonNull() || !root.get("player").isJsonObject()) {
                 return LookupResult.error(playerName + " has no Hypixel stats.");
             }
-        } catch (Exception ignored) {
-            return LookupResult.error("Hypixel returned an invalid player response. Please try again.");
-        }
-
-        JsonObject guild = new JsonObject();
-        boolean guildResponseComplete = false;
-        ApiResponse guildResponse = request(GUILD_ENDPOINT + uuid.toString().replace("-", ""));
-        if (guildResponse.isSuccess()) {
-            try {
-                JsonObject guildRoot = new JsonParser().parse(guildResponse.body).getAsJsonObject();
-                if (!hasFalseSuccess(guildRoot)) {
-                    guildResponseComplete = true;
-                    if (guildRoot.has("guild") && !guildRoot.get("guild").isJsonNull()) {
-                        guild = guildRoot.getAsJsonObject("guild");
-                    }
-                }
-            } catch (Exception ignored) {
-                // Guild data is optional and must not prevent a stat lookup from succeeding.
+            if (!root.has("guild")) {
+                return LookupResult.error("Stats service returned an incomplete response. Please try again.");
             }
+            JsonElement guildElement = root.get("guild");
+            if (!guildElement.isJsonNull() && !guildElement.isJsonObject()) {
+                return LookupResult.error("Stats service returned an invalid response. Please try again.");
+            }
+            player = root.getAsJsonObject("player");
+            if (guildElement.isJsonObject()) {
+                guild = guildElement.getAsJsonObject();
+            }
+        } catch (Exception ignored) {
+            return LookupResult.error("Stats service returned an invalid response. Please try again.");
         }
 
-        JsonObject player = root.getAsJsonObject("player");
         PlayerProfile profile = parseProfile(player, guild);
         Bedwars bedwars = parseBedwars(player);
         Duels duels = parseDuels(player);
-        if (guildResponseComplete) {
-            synchronized (Stats.CACHE_LOCK) {
-                Stats.playerProfileList.put(cacheKey, profile);
-                Stats.bedwarsStatsList.put(cacheKey, bedwars);
-                Stats.duelsStatsList.put(cacheKey, duels);
-            }
-        }
         return LookupResult.success(profile, bedwars, duels);
+    }
+
+    private static String statsEndpoint(UUID uuid) {
+        String baseUrl = ModConfig.backendUrl.trim();
+        while (baseUrl.endsWith("/")) {
+            baseUrl = baseUrl.substring(0, baseUrl.length() - 1);
+        }
+        try {
+            URL url = new URL(baseUrl);
+            String protocol = url.getProtocol().toLowerCase(Locale.ROOT);
+            if (url.getHost().isEmpty()
+                    || (!url.getPath().isEmpty() && !"/".equals(url.getPath()))
+                    || url.getQuery() != null
+                    || url.getRef() != null
+                    || (!"https".equals(protocol) && !("http".equals(protocol) && isLoopbackHost(url.getHost())))) {
+                throw new IllegalArgumentException(backendUrlError());
+            }
+        } catch (IOException ignored) {
+            throw new IllegalArgumentException(backendUrlError());
+        }
+        return baseUrl + STATS_ENDPOINT + uuid.toString().replace("-", "");
+    }
+
+    private static boolean isLoopbackHost(String host) {
+        return "localhost".equalsIgnoreCase(host)
+                || "127.0.0.1".equals(host)
+                || "::1".equals(host)
+                || "[::1]".equals(host);
+    }
+
+    private static String backendUrlError() {
+        return "Stats backend URL must use HTTPS. HTTP is allowed only for local development.";
     }
 
     private static ApiResponse request(String endpoint) {
@@ -104,7 +121,6 @@ public final class HypixelApiClient {
                 connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
                 connection.setReadTimeout(READ_TIMEOUT_MS);
                 connection.setRequestProperty("Accept", "application/json");
-                connection.setRequestProperty("API-Key", ModConfig.api.trim());
 
                 int status = connection.getResponseCode();
                 String body = read(status >= 400 ? connection.getErrorStream() : connection.getInputStream());
@@ -117,8 +133,8 @@ public final class HypixelApiClient {
                         continue;
                     }
                     return ApiResponse.error(status == 429
-                            ? "Hypixel API rate limit reached. Please try again shortly."
-                            : "Hypixel API is temporarily unavailable. Please try again.");
+                            ? "Stats service rate limit reached. Please try again shortly."
+                            : "Stats service is temporarily unavailable. Please try again.");
                 }
                 return ApiResponse.error(errorForStatus(status, body));
             } catch (IOException ignored) {
@@ -126,14 +142,14 @@ public final class HypixelApiClient {
                     sleep(attempt);
                     continue;
                 }
-                return ApiResponse.error("Could not connect to the Hypixel API. Please try again.");
+                return ApiResponse.error("Could not connect to the stats service. Please try again.");
             } finally {
                 if (connection != null) {
                     connection.disconnect();
                 }
             }
         }
-        return ApiResponse.error("Could not connect to the Hypixel API. Please try again.");
+        return ApiResponse.error("Could not connect to the stats service. Please try again.");
     }
 
     private static void sleep(int attempt) {
@@ -146,9 +162,9 @@ public final class HypixelApiClient {
 
     private static String errorForStatus(int status, String body) {
         try {
-            return apiCause(new JsonParser().parse(body).getAsJsonObject(), "Hypixel API request failed (HTTP " + status + ").");
+            return apiCause(new JsonParser().parse(body).getAsJsonObject(), "Stats service request failed (HTTP " + status + ").");
         } catch (Exception ignored) {
-            return "Hypixel API request failed (HTTP " + status + ").";
+            return "Stats service request failed (HTTP " + status + ").";
         }
     }
 
